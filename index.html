@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="UTF-8">
+<title>FB Page Monitor</title>
+<style>
+:root {
+  --bg: #0f1115;
+  --card-bg: #1a1d24;
+  --accent: #4f8cff;
+  --text: #e8e8e8;
+  --muted: #9aa0aa;
+  --border: #2a2e37;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  margin: 0;
+  padding: 24px;
+}
+
+.container { max-width: 900px; margin: 0 auto; }
+
+h1 { font-size: 24px; margin-bottom: 20px; }
+h2 { font-size: 16px; color: var(--muted); margin: 0 0 12px; }
+
+.stats-row {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.stat-card {
+  flex: 1;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px;
+  text-align: center;
+}
+
+.stat-value { font-size: 32px; font-weight: 700; color: var(--accent); }
+.stat-label { font-size: 13px; color: var(--muted); margin-top: 4px; }
+
+.panel {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px;
+  margin-bottom: 20px;
+}
+
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+#add-page-form {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+#add-page-form input {
+  flex: 1;
+  min-width: 160px;
+  background: #12141a;
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 10px;
+  border-radius: 8px;
+}
+
+button {
+  background: var(--accent);
+  color: white;
+  border: none;
+  padding: 10px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+button:hover { opacity: 0.9; }
+
+.hint { font-size: 12px; color: var(--muted); margin-top: 8px; }
+
+.pages-list, .logs-list { display: flex; flex-direction: column; gap: 10px; }
+
+.page-row, .log-card {
+  background: #12141a;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.page-row .name { font-weight: 600; }
+.page-row .meta { font-size: 12px; color: var(--muted); }
+
+.delete-btn { background: #ff4f4f; padding: 6px 10px; font-size: 12px; }
+
+.log-card {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.log-card .title { font-weight: 600; color: var(--accent); }
+.log-card .msg { font-size: 13px; color: var(--text); }
+.log-card a { color: var(--accent); font-size: 13px; }
+.log-card .time { font-size: 11px; color: var(--muted); }
+
+.empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+</style>
+</head>
+<body>
+  <div class="container">
+    <h1>📘 Facebook Page Monitor</h1>
+
+    <div class="stats-row">
+      <div class="stat-card">
+        <div class="stat-value" id="stat-total-pages">0</div>
+        <div class="stat-label">Total Pages Monitored</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="stat-total-posts">0</div>
+        <div class="stat-label">Total New Posts Found</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>➕ Naya Page Add Karo</h2>
+      <form id="add-page-form">
+        <input type="text" id="facebook-url" placeholder="Facebook Page URL (e.g. https://www.facebook.com/yourpage)" required>
+        <input type="text" id="page-name" placeholder="Page Name (optional)">
+        <button type="submit">Add Page</button>
+      </form>
+      <p class="hint">Bas public page ka URL daalo — background job (facebook-scraper) isse periodically monitor karega, koi access token/login nahi chahiye.</p>
+    </div>
+
+    <div class="panel">
+      <h2>📄 Monitored Pages</h2>
+      <div id="pages-list" class="pages-list"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <h2>🔔 Logs — Naye Posts</h2>
+        <button id="refresh-btn">Refresh Now</button>
+      </div>
+      <div id="logs-list" class="logs-list"></div>
+    </div>
+  </div>
+
+  <script>
+async function loadStats() {
+  const res = await fetch("/api/stats");
+  const data = await res.json();
+  document.getElementById("stat-total-pages").textContent = data.total_pages;
+  document.getElementById("stat-total-posts").textContent = data.total_new_posts;
+}
+
+async function loadPages() {
+  const res = await fetch("/api/pages");
+  const pages = await res.json();
+  const el = document.getElementById("pages-list");
+
+  if (pages.length === 0) {
+    el.innerHTML = '<div class="empty">Abhi koi page add nahi hua.</div>';
+    return;
+  }
+
+  el.innerHTML = pages.map(p => `
+    <div class="page-row">
+      <div>
+        <div class="name">${escapeHtml(p.page_name)}</div>
+        <div class="meta"><a href="${escapeHtml(p.facebook_url)}" target="_blank" rel="noopener">${escapeHtml(p.facebook_url)}</a> · Last checked: ${p.last_checked ? new Date(p.last_checked).toLocaleString() : "abhi tak nahi"}</div>
+      </div>
+      <button class="delete-btn" data-url="${escapeHtml(p.facebook_url)}">Remove</button>
+    </div>
+  `).join("");
+
+  el.querySelectorAll(".delete-btn").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      await fetch(`/api/pages/${encodeURIComponent(btn.dataset.url)}`, { method: "DELETE" });
+      loadPages();
+      loadStats();
+    });
+  });
+}
+
+async function loadLogs() {
+  const res = await fetch("/api/logs");
+  const logs = await res.json();
+  const el = document.getElementById("logs-list");
+
+  if (logs.length === 0) {
+    el.innerHTML = '<div class="empty">Abhi tak koi naya post nahi mila.</div>';
+    return;
+  }
+
+  el.innerHTML = logs.map(log => `
+    <div class="log-card">
+      <div class="title">${escapeHtml(log.page_name)} → naya post mila</div>
+      ${log.message ? `<div class="msg">${escapeHtml(log.message.slice(0, 200))}</div>` : ""}
+      ${log.post_link ? `<a href="${escapeHtml(log.post_link)}" target="_blank" rel="noopener">${escapeHtml(log.post_link)}</a>` : ""}
+      <div class="time">${new Date(log.notified_at).toLocaleString()}</div>
+    </div>
+  `).join("");
+}
+
+function escapeHtml(str) {
+  if (!str) return "";
+  const div = document.createElement("div");
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+document.getElementById("add-page-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const facebook_url = document.getElementById("facebook-url").value.trim();
+  const page_name = document.getElementById("page-name").value.trim();
+
+  const res = await fetch("/api/pages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ facebook_url, page_name }),
+  });
+
+  const data = await res.json();
+  if (data.error) {
+    alert(data.error);
+    return;
+  }
+
+  document.getElementById("add-page-form").reset();
+  loadPages();
+  loadStats();
+});
+
+document.getElementById("refresh-btn").addEventListener("click", async () => {
+  await fetch("/api/check-now", { method: "POST" });
+  refreshAll();
+});
+
+function refreshAll() {
+  loadStats();
+  loadPages();
+  loadLogs();
+}
+
+refreshAll();
+setInterval(refreshAll, 15000); // har 15 second me auto-refresh
+  </script>
+</body>
+</html>

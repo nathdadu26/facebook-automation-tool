@@ -5,6 +5,12 @@ import config
 
 app = Flask(__name__)
 
+# Scheduler yahan module-level pe start hota hai taaki yeh gunicorn (Railway/production)
+# aur seedha "python app.py" (local dev) dono ke sath kaam kare.
+# NOTE: Agar production me multiple gunicorn workers use karoge to yeh job
+# har worker me alag-alag chalega — isliye Procfile me workers=1 rakha gaya hai.
+monitor.start_scheduler()
+
 
 @app.route("/")
 def index():
@@ -63,5 +69,4 @@ def api_check_now():
 
 
 if __name__ == "__main__":
-    monitor.start_scheduler()
     app.run(host="0.0.0.0", port=config.FLASK_PORT, debug=False)

@@ -4,3 +4,4 @@ python-dotenv==1.0.1
 facebook-scraper==0.2.59
 lxml_html_clean==0.4.1
 APScheduler==3.10.4
+gunicorn==22.0.0
