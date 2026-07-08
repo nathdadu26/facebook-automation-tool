@@ -1,10 +1,11 @@
 import logging
 import random
+import re
 import time
 from urllib.parse import urlparse, parse_qs
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from facebook_scraper import get_posts
+from playwright.sync_api import sync_playwright
 
 import db
 import config
@@ -12,17 +13,19 @@ import config
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("monitor")
 
-FB_MOBILE_BASE = "https://m.facebook.com/"
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
 
 
 def extract_page_identifier(facebook_url: str) -> dict:
     """
     Facebook URL do format me aata hai:
-      1. Page (username wala): https://www.facebook.com/nasa           -> slug 'nasa'
+      1. Page (username wala): https://www.facebook.com/nasa
       2. Profile (numeric ID wala): https://www.facebook.com/profile.php?id=123456&sk=reels_tab
-         -> ID query-string me hoti hai, path me nahi, isliye alag handling chahiye
 
-    Return: {"account": <slug ya id>, "start_url": <explicit URL agar profile.php ho, warna None>}
+    Return: {"url": <full www.facebook.com URL jo Playwright khol sakta hai>}
     """
     parsed = urlparse(facebook_url)
     path = parsed.path.strip("/")
@@ -30,31 +33,80 @@ def extract_page_identifier(facebook_url: str) -> dict:
 
     if path.lower() == "profile.php" and "id" in query:
         fb_id = query["id"][0]
-        return {
-            "account": fb_id,
-            "start_url": f"{FB_MOBILE_BASE}profile.php?id={fb_id}",
-        }
+        return {"url": f"https://www.facebook.com/profile.php?id={fb_id}"}
 
     slug = path.split("/")[0] if path else facebook_url
-    return {"account": slug, "start_url": None}
+    return {"url": f"https://www.facebook.com/{slug}/"}
+
+
+def _derive_post_id(post_url: str) -> str:
+    """Post permalink se ek stable ID nikalta hai. Na mile to poora URL hi ID ban jata hai."""
+    match = re.search(r"(?:story_fbid|fbid|/posts/|/videos/|/photos/)[/=](\d+)", post_url)
+    if match:
+        return match.group(1)
+    return post_url
 
 
 def fetch_recent_posts(facebook_url: str, count: int = 2):
-    """Kisi bhi page/profile ke sabse recent 'count' posts fetch karta hai (raw list)."""
-    identifier = extract_page_identifier(facebook_url)
-    kwargs = {"pages": 1}
-    if identifier["start_url"]:
-        kwargs["start_url"] = identifier["start_url"]
+    """
+    Headless Chromium (Playwright) se page/profile khol ke uske recent posts
+    ka permalink + text nikalta hai.
 
-    posts = list(get_posts(identifier["account"], **kwargs))
+    NOTE: Yeh best-effort hai — Facebook apna DOM structure baar-baar badalta
+    hai, kabhi checkpoint/login-wall bhi dikha sakta hai. 0 posts aana kabhi
+    kabhi normal hai, khaaskar agar bahut jaldi-jaldi requests bheji jaayein.
+    """
+    identifier = extract_page_identifier(facebook_url)
+    posts = []
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            user_agent=USER_AGENT,
+            viewport={"width": 1280, "height": 900},
+        )
+        page = context.new_page()
+        try:
+            page.goto(identifier["url"], wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(2500)
+
+            # Lazy-loaded posts render karne ke liye thoda scroll karo
+            for _ in range(2):
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                page.wait_for_timeout(1500)
+
+            articles = page.query_selector_all('div[role="article"]')
+
+            for article in articles[:count]:
+                link_el = article.query_selector(
+                    'a[href*="/posts/"], a[href*="story_fbid"], '
+                    'a[href*="/videos/"], a[href*="/photos/"]'
+                )
+                post_url = link_el.get_attribute("href") if link_el else ""
+                if post_url and post_url.startswith("/"):
+                    post_url = "https://www.facebook.com" + post_url
+
+                text = article.inner_text()[:500] if article else ""
+
+                if post_url:
+                    posts.append({
+                        "post_id": _derive_post_id(post_url),
+                        "post_url": post_url,
+                        "text": text,
+                        "time": "",
+                    })
+        except Exception as e:
+            logger.warning(f"Playwright fetch fail hua ({facebook_url}): {e}")
+        finally:
+            browser.close()
+
     return posts[:count]
 
 
 def fetch_and_log_initial_posts(facebook_url: str, page_name: str, count: int = 2):
     """
     Naya page/profile add hote hi turant uske sabse recent 'count' posts fetch
-    karke logs me daal deta hai, taaki dashboard pe turant post links dikhein
-    (background scheduler ka wait nahi karna padta).
+    karke logs me daal deta hai, taaki dashboard pe turant post links dikhein.
     """
     try:
         posts = fetch_recent_posts(facebook_url, count=count)
@@ -96,8 +148,6 @@ def check_all_pages():
         try:
             posts = fetch_recent_posts(facebook_url, count=10)
         except Exception as e:
-            # Facebook ne HTML change kar diya ho, ya rate-limit/IP flag ho jaaye
-            # to yahi exception aayega — page skip karke aage badho, crash mat karo
             logger.warning(f"[{page_name}] Fetch fail hua: {e}")
             continue
 
@@ -105,7 +155,7 @@ def check_all_pages():
             db.update_last_checked(facebook_url)
             continue
 
-        # facebook_scraper posts newest-first return karta hai
+        # Playwright se posts newest-first order me aate hain (page pe jaisa dikhta hai)
         new_posts = []
         for post in posts:
             post_id = post.get("post_id")
@@ -113,7 +163,6 @@ def check_all_pages():
                 break
             new_posts.append(post)
 
-        # Pehli baar check ho raha hai to sirf latest post record karo
         if last_post_id is None and new_posts:
             new_posts = new_posts[:1]
 
@@ -131,8 +180,7 @@ def check_all_pages():
         newest_id = posts[0].get("post_id") or last_post_id
         db.update_last_checked(facebook_url, last_post_id=newest_id)
 
-        # Rate limiting: har page ke beech random delay, taaki IP ban ka
-        # risk kam ho (Facebook rapid-fire requests ko bot samajhta hai)
+        # Rate limiting: har page ke beech random delay
         time.sleep(random.uniform(config.MIN_DELAY_SECONDS, config.MAX_DELAY_SECONDS))
 
 
