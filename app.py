@@ -1,9 +1,12 @@
+import os
 from flask import Flask, jsonify, request, render_template
 import db
 import monitor
 import config
 
-app = Flask(__name__)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+app = Flask(__name__, template_folder=os.path.join(BASE_DIR, "templates"))
 
 # Scheduler yahan module-level pe start hota hai taaki yeh gunicorn (Railway/production)
 # aur seedha "python app.py" (local dev) dono ke sath kaam kare.
@@ -43,7 +46,11 @@ def api_add_page():
         page_name = facebook_url
 
     db.add_page(facebook_url, page_name)
-    return jsonify({"success": True})
+
+    # Turant recent 2 posts fetch karke logs me daal do aur response me bhi bhej do
+    recent_posts = monitor.fetch_and_log_initial_posts(facebook_url, page_name, count=2)
+
+    return jsonify({"success": True, "recent_posts": recent_posts})
 
 
 @app.route("/api/pages/<path:facebook_url>", methods=["DELETE"])
