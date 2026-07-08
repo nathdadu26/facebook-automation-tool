@@ -89,6 +89,7 @@ button {
 button:hover { opacity: 0.9; }
 
 .hint { font-size: 12px; color: var(--muted); margin-top: 8px; }
+.hint a { color: var(--accent); }
 
 .pages-list, .logs-list { display: flex; flex-direction: column; gap: 10px; }
 
@@ -139,11 +140,12 @@ button:hover { opacity: 0.9; }
     <div class="panel">
       <h2>➕ Naya Page Add Karo</h2>
       <form id="add-page-form">
-        <input type="text" id="facebook-url" placeholder="Facebook Page URL (e.g. https://www.facebook.com/yourpage)" required>
-        <input type="text" id="page-name" placeholder="Page Name (optional)">
+        <input type="text" id="facebook-url" placeholder="Facebook Page/Profile URL (e.g. https://www.facebook.com/nasa ya profile.php?id=...)" required>
+        <input type="text" id="page-name" placeholder="Name (optional)">
         <button type="submit">Add Page</button>
       </form>
-      <p class="hint">Bas public page ka URL daalo — background job (facebook-scraper) isse periodically monitor karega, koi access token/login nahi chahiye.</p>
+      <div id="add-status" class="hint"></div>
+      <p class="hint">Page (username wala) aur Profile (profile.php?id=... wala) dono URL support karte hain. Add karte hi turant latest 2 posts fetch ho ke dikhenge.</p>
     </div>
 
     <div class="panel">
@@ -228,6 +230,12 @@ document.getElementById("add-page-form").addEventListener("submit", async (e) =>
   e.preventDefault();
   const facebook_url = document.getElementById("facebook-url").value.trim();
   const page_name = document.getElementById("page-name").value.trim();
+  const statusEl = document.getElementById("add-status");
+  const submitBtn = e.target.querySelector("button[type=submit]");
+
+  submitBtn.disabled = true;
+  submitBtn.textContent = "Fetching...";
+  statusEl.textContent = "";
 
   const res = await fetch("/api/pages", {
     method: "POST",
@@ -236,14 +244,26 @@ document.getElementById("add-page-form").addEventListener("submit", async (e) =>
   });
 
   const data = await res.json();
+  submitBtn.disabled = false;
+  submitBtn.textContent = "Add Page";
+
   if (data.error) {
     alert(data.error);
     return;
   }
 
+  if (data.recent_posts && data.recent_posts.length > 0) {
+    statusEl.innerHTML = "✅ Recent posts mil gaye:<br>" + data.recent_posts.map(p =>
+      `<a href="${escapeHtml(p.post_link)}" target="_blank" rel="noopener">${escapeHtml(p.post_link || "(link nahi mila)")}</a>`
+    ).join("<br>");
+  } else {
+    statusEl.textContent = "⚠️ Page add ho gaya, lekin abhi koi post fetch nahi ho saka (thodi der me background check retry karega).";
+  }
+
   document.getElementById("add-page-form").reset();
   loadPages();
   loadStats();
+  loadLogs();
 });
 
 document.getElementById("refresh-btn").addEventListener("click", async () => {
